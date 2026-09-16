@@ -1,0 +1,99 @@
+#!/bin/bash
+# wechat-toggle - bring the WeChat (Linux) main window to the front, or put it
+# away when it is already focused. Meant to be bound to a global shortcut.
+#
+# Showing goes through WeChat's own tray icon: closing WeChat to the tray
+# unmaps its main window, and force-mapping it with xdotool yields an
+# unpainted black window because WeChat still believes it is hidden. The tray
+# icon is a StatusNotifierItem on the session bus whose dbusmenu has a
+# "显示" (Show) entry; clicking that entry over DBus is what makes WeChat
+# paint and map the window again.
+#
+# https://github.com/SailorMoonQ/wechat-linux-hotkey
+
+set -u
+
+TITLE_RE='^(微信|WeChat)$'
+SHOW_LABEL_RE='"(显示|Show)"'
+
+die() { echo "wechat-toggle: $*" >&2; exit 1; }
+
+need() {
+    command -v "$1" >/dev/null 2>&1 || die "missing command: $1"
+}
+
+need pgrep
+need dbus-send
+
+on_x11=0
+if [ "${XDG_SESSION_TYPE:-}" = "x11" ] || { [ -z "${XDG_SESSION_TYPE:-}" ] && [ -n "${DISPLAY:-}" ]; }; then
+    on_x11=1
+    need xdotool
+    need xwininfo
+fi
+
+pid=$(pgrep -o -x wechat || true)
+if [ -z "$pid" ]; then
+    need wechat
+    exec wechat
+fi
+
+# xdotool matches --name case-insensitively, which also hits a hidden 1x1
+# helper window titled "wechat", so re-check the exact title.
+main_window() {
+    local w
+    for w in $(xdotool search --pid "$pid" --name "$TITLE_RE" 2>/dev/null); do
+        case "$(xdotool getwindowname "$w" 2>/dev/null)" in
+            微信|WeChat) echo "$w"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+is_viewable() {
+    xwininfo -id "$1" 2>/dev/null | grep -q 'IsViewable'
+}
+
+# Focused -> minimize (X11 only; Wayland offers no window control to scripts).
+if [ "$on_x11" = 1 ]; then
+    main=$(main_window)
+    if [ -n "$main" ] && [ "$(xdotool getactivewindow 2>/dev/null)" = "$main" ]; then
+        xdotool windowminimize "$main"
+        exit 0
+    fi
+fi
+
+# Otherwise ask WeChat to show itself via its tray menu.
+sni=$(dbus-send --session --print-reply --dest=org.freedesktop.DBus \
+        /org/freedesktop/DBus org.freedesktop.DBus.ListNames 2>/dev/null \
+      | grep -o "org.kde.StatusNotifierItem-$pid-[0-9]*" | head -n1)
+if [ -z "$sni" ]; then
+    die "WeChat (pid $pid) has no tray icon on the session bus"
+fi
+
+item=$(dbus-send --session --print-reply --dest="$sni" /MenuBar \
+         com.canonical.dbusmenu.GetLayout int32:0 int32:-1 array:string: 2>/dev/null \
+       | awk -v re="$SHOW_LABEL_RE" '/^ *int32 /{id=$2} $0 ~ re {print id; exit}')
+if [ -z "$item" ]; then
+    die "no Show entry found in the WeChat tray menu"
+fi
+
+# --print-reply matters: without waiting for the reply dbus-send can exit
+# before the message is flushed and the click is silently lost.
+dbus-send --session --print-reply --dest="$sni" /MenuBar \
+    com.canonical.dbusmenu.Event int32:"$item" string:clicked variant:string:"" uint32:0 \
+    >/dev/null 2>&1 || die "tray menu click failed"
+
+[ "$on_x11" = 1 ] || exit 0
+
+# GNOME's focus-stealing prevention may only mark the window as demanding
+# attention instead of raising it, so focus it once it is mapped.
+for _ in $(seq 30); do
+    main=$(main_window)
+    if [ -n "$main" ] && is_viewable "$main"; then
+        xdotool windowactivate --sync "$main" 2>/dev/null
+        exit 0
+    fi
+    sleep 0.1
+done
+die "WeChat did not show its window within 3s"
