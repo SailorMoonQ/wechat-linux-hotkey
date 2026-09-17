@@ -38,11 +38,13 @@ if [ -z "$pid" ]; then
     exec wechat
 fi
 
-# xdotool matches --name case-insensitively, which also hits a hidden 1x1
-# helper window titled "wechat", so re-check the exact title.
+# --all is essential: xdotool ORs multiple criteria by default, so without it
+# "--pid X --name Y" also returns a hidden WeChatAppEx window titled 微信.
+# --name is also case-insensitive and hits a 1x1 helper window titled
+# "wechat", so re-check the exact title.
 main_window() {
     local w
-    for w in $(xdotool search --pid "$pid" --name "$TITLE_RE" 2>/dev/null); do
+    for w in $(xdotool search --all --pid "$pid" --name "$TITLE_RE" 2>/dev/null); do
         case "$(xdotool getwindowname "$w" 2>/dev/null)" in
             微信|WeChat) echo "$w"; return 0 ;;
         esac
