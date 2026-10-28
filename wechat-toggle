@@ -13,7 +13,7 @@
 
 set -u
 
-TITLE_RE='^(微信|WeChat)$'
+TITLE_RE='^(微信|WeChat|Weixin)$'
 SHOW_LABEL_RE='"(显示|Show)"'
 
 die() { echo "wechat-toggle: $*" >&2; exit 1; }
@@ -46,7 +46,7 @@ main_window() {
     local w
     for w in $(xdotool search --all --pid "$pid" --name "$TITLE_RE" 2>/dev/null); do
         case "$(xdotool getwindowname "$w" 2>/dev/null)" in
-            微信|WeChat) echo "$w"; return 0 ;;
+            微信|WeChat|Weixin) echo "$w"; return 0 ;;
         esac
     done
     return 1
